@@ -244,9 +244,9 @@
     const errorBanner = document.getElementById('errorBanner');
     const errorText = document.getElementById('errorText');
 
-    // Hohe Partikeldichte (7.000 mobil / 8.200 Desktop) für messerscharfe Typografie
+    // Hohe Partikeldichte (7.400 mobil / 8.600 Desktop) für messerscharfe Typografie
     const isMobileInit = window.innerWidth < 640;
-    const PARTICLE_COUNT = isMobileInit ? 7000 : 8200;
+    const PARTICLE_COUNT = isMobileInit ? 7400 : 8600;
 
     // Simulationszustand
     let scene, camera, renderer, pointsMesh, geometry, material;
@@ -278,6 +278,15 @@
     const freqs = new Float32Array(PARTICLE_COUNT);
     const amps = new Float32Array(PARTICLE_COUNT);
     const springKs = new Float32Array(PARTICLE_COUNT);
+
+    // Individuelle Schweif-Parameter pro Partikel (natürlicher Kometen-Schweif statt Ball)
+    const followWeights = new Float32Array(PARTICLE_COUNT);
+    const followPointerIds = new Array(PARTICLE_COUNT).fill(null);
+    const trailLags = new Float32Array(PARTICLE_COUNT);
+    const lateralOffsets = new Float32Array(PARTICLE_COUNT);
+    const zOffsets = new Float32Array(PARTICLE_COUNT);
+    const curlPhases = new Float32Array(PARTICLE_COUNT);
+    const TRAIL_MAX_POINTS = 44;
 
     // Cache für abgetastete Wort-Punkte (sofortiger Wechsel ohne Ruckeln)
     const sampledWordCache = new Map();
@@ -445,11 +454,12 @@
         // Leuchtender, klar abgegrenzter Farbschein um den Kern
         float halo = pow(max(0.0, 1.0 - d * 2.0), 2.1);
 
-        // Kern strahlt reinweiß, Rand leuchtet in der intensiven Wortfarbe
-        vec3 baseGlow = mix(vColor, vec3(1.0), core * 0.88 + vEnergy * 0.55);
+        // Kern strahlt reinweiß; im Schweif leuchten Partikel subtil heller und wärmer auf
+        vec3 warmHighlight = mix(vColor, vec3(1.0, 0.96, 0.88), vEnergy * 0.42);
+        vec3 baseGlow = mix(warmHighlight, vec3(1.0), core * 0.88 + vEnergy * 0.48);
 
         // Hohe Helligkeit für maximalen Kontrast auf #02040a
-        float alpha = clamp(core * 0.96 + halo * 0.62, 0.0, 1.0);
+        float alpha = clamp(core * 0.96 + halo * (0.62 + vEnergy * 0.24), 0.0, 1.0);
         gl_FragColor = vec4(baseGlow, alpha);
       }
     `;
@@ -487,6 +497,14 @@
         springKs[i] = 0.0020 + Math.random() * 0.0010;
         sizes[i] = (isMobileInit ? 1.05 : 1.15) + Math.random() * 0.55;
         energies[i] = 0;
+
+        // Natürliche Schweif-Eigenschaften vorinitialisieren
+        followWeights[i] = 0;
+        followPointerIds[i] = null;
+        trailLags[i] = 0.05 + Math.pow(Math.random(), 0.85) * 0.95;
+        lateralOffsets[i] = (Math.random() - 0.5) * 2.0;
+        zOffsets[i] = (Math.random() - 0.5) * 2.0;
+        curlPhases[i] = Math.random() * Math.PI * 2;
       }
 
       geometry = new THREE.BufferGeometry();
@@ -520,6 +538,8 @@
       currentWord = word;
       // Kurzer Morph-Boost beim Laden/Umschalten, damit das neue Wort geschmeidig in ~1,5–2 s entsteht
       morphBoost = 1.0;
+      followWeights.fill(0);
+      followPointerIds.fill(null);
 
       const theme = WORD_THEMES[word];
       const sampled = sampleWordPoints(word);
@@ -552,6 +572,10 @@
         targets[i3] = tx;
         targets[i3 + 1] = ty;
         targets[i3 + 2] = tz;
+
+        // Beim Wort-Wechsel aktiven Schweif sanft lösen, damit das neue Wort sauber entsteht
+        followWeights[i] = 0;
+        followPointerIds[i] = null;
 
         // Kontrastreicher heller Farbverlauf (Weiß-Akzent oben/mittig -> leuchtende Wortfarbe)
         if (pt.u < 0.5) {
@@ -609,82 +633,143 @@
       const w = window.innerWidth;
       const h = window.innerHeight;
       const aspect = w / Math.max(1, h);
-      const isPortrait = aspect < 1.0;
 
       camera.aspect = aspect;
       camera.updateProjectionMatrix();
 
-      const vFovRad = THREE.MathUtils.degToRad(camera.fov);
-      const tanHalfFov = Math.tan(vFovRad * 0.5);
+      const vFov = THREE.MathUtils.degToRad(camera.fov);
+      const tanHalfV = Math.tan(vFov * 0.5);
+      const tanHalfH = tanHalfV * aspect;
 
-      // Großzügiger Rand links/rechts und oben/unten für Akzente & Steuerleiste
-      const paddedWidth = Math.max(currentWordBounds.width, 13.5) * (isPortrait ? 1.18 : 1.24);
-      const paddedHeight = Math.max(currentWordBounds.height, 5.2) * (isPortrait ? 2.15 : 1.75);
+      // Wortbreite & -höhe mit sicherem Rand für Hoch- und Querformat
+      const targetW = Math.max(12.5, currentWordBounds.width) * (aspect < 1 ? 1.24 : 1.38);
+      const targetH = Math.max(5.2, currentWordBounds.height) * 1.95;
 
-      const distForWidth = (paddedWidth / (2 * aspect)) / tanHalfFov;
-      const distForHeight = (paddedHeight / 2) / tanHalfFov;
+      const distH = (targetW * 0.5) / tanHalfH;
+      const distV = (targetH * 0.5) / tanHalfV;
+      const dist = Math.max(distH, distV, 16.5);
 
-      const targetZ = Math.max(distForWidth, distForHeight, 15.5);
-      camera.position.set(0, 0, targetZ);
+      camera.position.set(0, 0, dist);
+      camera.lookAt(0, 0, 0);
 
       if (material) {
-        // Punktgröße passend zur Kameradistanz skalieren, damit der Text auf Handy & Desktop gleich scharf bleibt
-        const scaleFactor = isPortrait ? 64.0 : 88.0;
-        material.uniforms.uSizeScale.value = scaleFactor * (targetZ / 20.0);
-        material.uniforms.uPixelRatio.value = renderer.getPixelRatio();
+        material.uniforms.uSizeScale.value = (aspect < 1 ? 74.0 : 88.0) * (dist / 22.0);
       }
     }
 
-    function handleResize() {
+    function onResize() {
+      if (!renderer || !camera) return;
       const w = window.innerWidth;
       const h = window.innerHeight;
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
       renderer.setSize(w, h);
+      if (material) {
+        material.uniforms.uPixelRatio.value = renderer.getPixelRatio();
+      }
       fitCameraToWord();
     }
 
-    window.addEventListener('resize', handleResize);
-
     // =========================================================================
-    // 7. INTERAKTION: MAUS & MULTI-TOUCH (3D-RAYCASTING)
+    // 7. ZEIGER-, TOUCH- & BUTTON-INTERAKTION
     // =========================================================================
     function markInteracted() {
       if (!hasInteracted) {
         hasInteracted = true;
-        if (hintEl) hintEl.classList.add('faded');
+        if (hintEl) {
+          hintEl.classList.add('faded');
+        }
       }
     }
 
     function screenToWorld(clientX, clientY) {
-      tmpNdc.x = (clientX / window.innerWidth) * 2 - 1;
-      tmpNdc.y = -(clientY / window.innerHeight) * 2 + 1;
-
+      const rect = renderer.domElement.getBoundingClientRect();
+      tmpNdc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      tmpNdc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(tmpNdc, camera);
       raycaster.ray.intersectPlane(interactionPlane, tmpWorldPos);
-      return { x: tmpWorldPos.x, y: tmpWorldPos.y };
+      return tmpWorldPos;
     }
 
-    function updatePointer(id, clientX, clientY) {
+    function updatePointer(id, clientX, clientY, isDown = false) {
       const world = screenToWorld(clientX, clientY);
       const prev = activePointers.get(id);
-      const rawVx = prev ? (world.x - prev.x) : 0;
-      const rawVy = prev ? (world.y - prev.y) : 0;
-      // Stark geglättete & begrenzte Zeigergeschwindigkeit, damit schnelle Wischbewegungen nie wild werden
-      const vx = prev ? prev.vx * 0.58 + rawVx * 0.42 : 0;
-      const vy = prev ? prev.vy * 0.58 + rawVy * 0.42 : 0;
 
-      activePointers.set(id, {
-        x: world.x,
-        y: world.y,
-        vx: THREE.MathUtils.clamp(vx, -0.52, 0.52),
-        vy: THREE.MathUtils.clamp(vy, -0.52, 0.52)
-      });
+      if (!prev) {
+        activePointers.set(id, {
+          x: world.x,
+          y: world.y,
+          vx: 0,
+          vy: 0,
+          speed: 0,
+          isDown,
+          tx: 1,
+          ty: 0,
+          nx: 0,
+          ny: 1,
+          trail: [{ x: world.x, y: world.y, tx: 1, ty: 0, nx: 0, ny: 1 }]
+        });
+      } else {
+        const rawVx = world.x - prev.x;
+        const rawVy = world.y - prev.y;
+        const stepDist = Math.hypot(rawVx, rawVy);
+
+        // Geglättete & begrenzte Zeigergeschwindigkeit für ruhige, seidige Bewegungen
+        const vx = THREE.MathUtils.clamp(prev.vx * 0.58 + rawVx * 0.42, -0.52, 0.52);
+        const vy = THREE.MathUtils.clamp(prev.vy * 0.58 + rawVy * 0.42, -0.52, 0.52);
+
+        let tx = prev.tx;
+        let ty = prev.ty;
+        let nx = prev.nx;
+        let ny = prev.ny;
+
+        // Pfad-Historie nur bei echter Bewegung fortschreiben (verhindert Ball-Bildung im Stillstand)
+        if (stepDist > 0.035) {
+          const dirX = rawVx / stepDist;
+          const dirY = rawVy / stepDist;
+          // Tangente sanft glätten
+          const stx = tx * 0.68 + dirX * 0.32;
+          const sty = ty * 0.68 + dirY * 0.32;
+          const tLen = Math.hypot(stx, sty) || 1;
+          tx = stx / tLen;
+          ty = sty / tLen;
+          nx = -ty;
+          ny = tx;
+
+          // Bei schnellen Zügen Zwischenpunkte interpolieren für einen lückenlosen Schweif
+          const subSteps = Math.min(6, Math.max(1, Math.ceil(stepDist / 0.22)));
+          for (let s = 1; s <= subSteps; s++) {
+            const frac = s / subSteps;
+            prev.trail.unshift({
+              x: prev.x + rawVx * frac,
+              y: prev.y + rawVy * frac,
+              tx,
+              ty,
+              nx,
+              ny
+            });
+          }
+          if (prev.trail.length > TRAIL_MAX_POINTS) {
+            prev.trail.length = TRAIL_MAX_POINTS;
+          }
+        }
+
+        prev.x = world.x;
+        prev.y = world.y;
+        prev.vx = vx;
+        prev.vy = vy;
+        prev.speed = Math.hypot(vx, vy);
+        prev.isDown = isDown;
+        prev.tx = tx;
+        prev.ty = ty;
+        prev.nx = nx;
+        prev.ny = ny;
+      }
 
       // Sehr dezente 3D-Neigung (bleibt jederzeit perfekt lesbar)
-      const nx = (clientX / window.innerWidth - 0.5) * 2;
-      const ny = (clientY / window.innerHeight - 0.5) * 2;
-      targetCamRotY = nx * 0.06;
-      targetCamRotX = ny * 0.04;
+      const nxScreen = (clientX / window.innerWidth - 0.5) * 2;
+      const nyScreen = (clientY / window.innerHeight - 0.5) * 2;
+      targetCamRotY = nxScreen * 0.06;
+      targetCamRotX = nyScreen * 0.04;
     }
 
     function removePointer(id) {
@@ -698,15 +783,22 @@
     function bindEvents() {
       const dom = renderer.domElement;
 
-      // Maus-Interaktion
+      // Maus-Interaktion (sanftes Mitziehen bei Bewegung, besonders starkes Folgen bei gedrückter Taste)
       dom.addEventListener('mousemove', (e) => {
         markInteracted();
-        updatePointer('mouse', e.clientX, e.clientY);
+        updatePointer('mouse', e.clientX, e.clientY, (e.buttons & 1) === 1);
       });
 
       dom.addEventListener('mousedown', (e) => {
         markInteracted();
-        updatePointer('mouse', e.clientX, e.clientY);
+        updatePointer('mouse', e.clientX, e.clientY, true);
+      });
+
+      window.addEventListener('mouseup', () => {
+        const ptr = activePointers.get('mouse');
+        if (ptr) {
+          ptr.isDown = false;
+        }
       });
 
       dom.addEventListener('mouseleave', () => {
@@ -719,7 +811,7 @@
         markInteracted();
         for (let i = 0; i < e.changedTouches.length; i++) {
           const t = e.changedTouches[i];
-          updatePointer(t.identifier, t.clientX, t.clientY);
+          updatePointer(t.identifier, t.clientX, t.clientY, true);
         }
       }, { passive: false });
 
@@ -727,7 +819,7 @@
         e.preventDefault();
         for (let i = 0; i < e.changedTouches.length; i++) {
           const t = e.changedTouches[i];
-          updatePointer(t.identifier, t.clientX, t.clientY);
+          updatePointer(t.identifier, t.clientX, t.clientY, true);
         }
       }, { passive: false });
 
@@ -751,49 +843,46 @@
           }
         });
       });
+
+      // Responsive Anpassung bei Fenstergröße / Geräte-Drehung
+      window.addEventListener('resize', onResize);
     }
 
     // =========================================================================
     // 8. PHYSIK- & RENDER-SCHLEIFE (60 FPS SPRING-DAMPING)
     // =========================================================================
-    let lastTime = performance.now();
+    let lastTime = 0;
 
     function animate(now) {
       requestAnimationFrame(animate);
 
-      const dt = Math.min((now - lastTime) / 16.6667, 2.0); // Normiert auf 60 FPS
+      const elapsedMs = now - lastTime;
       lastTime = now;
+      // Normalisiertes Delta-Time-Maß bezogen auf 60 FPS (gekappt bei Tab-Wechsel)
+      const dt = Math.max(0.2, Math.min(elapsedMs / 16.6667, 2.2));
       const t = now * 0.001;
 
-      // Sehr ruhige, kaum merkliche 3D-Eigenbewegung der Wort-Gruppe
-      const idleRotY = Math.sin(t * 0.28) * 0.024;
-      const idleRotX = Math.cos(t * 0.22) * 0.014;
-      camRotY += (targetCamRotY + idleRotY - camRotY) * 0.04;
-      camRotX += (targetCamRotX + idleRotX - camRotX) * 0.04;
-
-      pointsMesh.rotation.y = camRotY;
-      pointsMesh.rotation.x = camRotX;
-
-      // Morph-Boost nach einem Wort-Wechsel sanft über ~2 Sekunden abklingen lassen
-      if (morphBoost > 0.001) {
-        morphBoost *= Math.pow(0.982, dt);
-      } else {
-        morphBoost = 0;
+      // Sanfte 3D-Kameraparallaxe
+      camRotX += (targetCamRotX - camRotX) * Math.min(1, 0.06 * dt);
+      camRotY += (targetCamRotY - camRotY) * Math.min(1, 0.06 * dt);
+      if (pointsMesh) {
+        pointsMesh.rotation.x = camRotX;
+        pointsMesh.rotation.y = camRotY;
       }
 
-      // Samtige, überdämpfte Viskosität (kein Zurückfedern, kein Zittern)
-      const baseDamping = 0.885 - morphBoost * 0.015;
-      const damping = Math.pow(baseDamping, dt);
-      const springMultiplier = 1.0 + morphBoost * 2.2;
+      // Temporären Morph-Boost beim Wort-Wechsel weich abbauen
+      morphBoost = Math.max(0, morphBoost - 0.012 * dt);
+      const springMultiplier = 1.0 + morphBoost * 4.5;
+      const damping = Math.pow(0.922, dt);
+      const colorLerp = Math.min(1, 0.045 * dt);
       const energyDecay = Math.pow(0.955, dt);
-      const colorLerp = 0.048 * dt;
 
       // Maximale Partikelgeschwindigkeit begrenzen, damit Bewegungen immer ruhig bleiben
-      const maxSpeed = 0.24 + morphBoost * 0.18;
+      const maxSpeed = 0.26 + morphBoost * 0.18;
       const maxSpeedSq = maxSpeed * maxSpeed;
 
       // Kleiner, präziser Interaktionsradius (~8 % der Wortbreite, wie eine Fingerspitze)
-      const interactRadius = Math.max(1.05, Math.min(1.45, currentWordBounds.width * 0.082));
+      const interactRadius = Math.max(1.05, Math.min(1.42, currentWordBounds.width * 0.082));
       const interactRadiusSq = interactRadius * interactRadius;
       const hasPointers = activePointers.size > 0;
 
@@ -815,49 +904,132 @@
         const liveTy = targets[i3 + 1] + Math.cos(t * f * 0.92 + phasesY[i]) * a;
         const liveTz = targets[i3 + 2] + Math.sin(t * f * 0.8 + phasesZ[i]) * (a * 1.1);
 
-        // 2. Sanfte Federkraft (überdämpft) zieht Partikel langsam & ohne Überschwingen zurück
-        const k = springKs[i] * springMultiplier * dt;
-        vx += (liveTx - px) * k;
-        vy += (liveTy - py) * k;
-        vz += (liveTz - pz) * k;
-
-        // 3. Präzises, samtiges Mitziehen + minimale 3D-Verdrängung im kleinen Radius
+        // 2. Aufnahme in den Schweif innerhalb des kleinen Fingerspitzen-Radius
         if (hasPointers) {
-          activePointers.forEach((ptr) => {
+          activePointers.forEach((ptr, ptrId) => {
             const dx = px - ptr.x;
             const dy = py - ptr.y;
             const distSq = dx * dx + dy * dy;
 
-            if (distSq < interactRadiusSq && distSq > 0.0001) {
+            if (distSq < interactRadiusSq) {
               const dist = Math.sqrt(distSq);
               const factor = 1.0 - dist / interactRadius;
               const smoothFactor = factor * factor;
 
-              const nx = dx / dist;
-              const ny = dy / dist;
+              // Beim ersten Aufnehmen individuelle Position entlang des Schweifs festlegen
+              if (followWeights[i] < 0.2 || followPointerIds[i] !== ptrId) {
+                followPointerIds[i] = ptrId;
+                trailLags[i] = 0.05 + Math.pow(Math.random(), 0.85) * 0.95;
+                // Seitlichen Versatz organisch an der Eintrittsseite orientieren
+                const sideProj = (dx * ptr.nx + dy * ptr.ny) / interactRadius;
+                lateralOffsets[i] = THREE.MathUtils.clamp(
+                  sideProj * 0.65 + (Math.random() - 0.5) * 1.35,
+                  -1.25,
+                  1.25
+                );
+                zOffsets[i] = (Math.random() - 0.5) * 2.0;
+              }
 
-              // Weiche, kontrollierte Mitnahme in Ziehrichtung
-              const dragStrength = (0.14 + smoothFactor * 0.24) * dt;
-              vx += ptr.vx * dragStrength;
-              vy += ptr.vy * dragStrength;
+              // Sanftes Aufnehmen (stärker bei aktiver Bewegung, kein Klumpen im Stillstand)
+              const pickupBoost = smoothFactor * (0.28 + Math.min(0.55, ptr.speed * 2.6)) * dt;
+              followWeights[i] = Math.min(1.0, followWeights[i] + pickupBoost);
 
-              // Sehr dezentes radiales Wegdrücken (kein Aufspritzen)
-              const pushForce = smoothFactor * 0.028 * dt;
-              vx += nx * pushForce;
-              vy += ny * pushForce;
+              // Tangentiale Strömung (Velocity-Advection) entlang der Fingerbewegung
+              const advect = (0.12 + smoothFactor * 0.22) * dt;
+              vx += ptr.vx * advect;
+              vy += ptr.vy * advect;
+              vz += zOffsets[i] * smoothFactor * ptr.speed * 0.035 * dt;
 
-              // Kontrollierte, milde Z-Bewegung (fliegt nie in die Kamera)
-              const zDir = (i % 2 === 0 ? 1 : -1);
-              const pointerSpeed = Math.hypot(ptr.vx, ptr.vy);
-              vz += zDir * (pushForce * 0.55 + smoothFactor * pointerSpeed * 0.045);
-
-              // Dezentes Aufleuchten bei sanfter Berührung
-              energies[i] = Math.min(0.85, energies[i] + smoothFactor * 0.28);
+              // Subtiles Aufleuchten beim Aufnehmen
+              energies[i] = Math.min(0.95, energies[i] + smoothFactor * 0.32);
             }
           });
         }
 
-        // 4. Viskose Dämpfung & Geschwindigkeitslimit für dauerhaft ruhige Bewegung
+        // 3. Organischer Sternenstaub-Schweif entlang der Pfad-Historie (kein Ball!)
+        let fw = followWeights[i];
+        if (fw > 0.002) {
+          const ptr = activePointers.get(followPointerIds[i]);
+          if (ptr && ptr.trail.length > 0) {
+            const lag = trailLags[i];
+            const trail = ptr.trail;
+            const maxIdx = trail.length - 1;
+            const floatIdx = lag * maxIdx;
+            const idx0 = Math.floor(floatIdx);
+            const idx1 = Math.min(maxIdx, idx0 + 1);
+            const blend = floatIdx - idx0;
+
+            const p0 = trail[idx0];
+            const p1 = trail[idx1];
+
+            // Interpolierter Referenzpunkt + Tangente/Normale auf der Zugbahn
+            const baseX = p0.x + (p1.x - p0.x) * blend;
+            const baseY = p0.y + (p1.y - p0.y) * blend;
+            const ttx = p0.tx + (p1.tx - p0.tx) * blend;
+            const tty = p0.ty + (p1.ty - p0.ty) * blend;
+            const tnx = p0.nx + (p1.nx - p0.nx) * blend;
+            const tny = p0.ny + (p1.ny - p0.ny) * blend;
+
+            // Kometenhaftes Auffächern: vorne schmal, nach hinten breiter werdend
+            const fanWidth = 0.34 + Math.pow(lag, 1.15) * 1.45;
+            const fanZ = 0.26 + lag * 0.95;
+
+            // Langsame, organische Wellen-/Curl-Drift im Schweif
+            const waveLat = Math.sin(t * 1.35 + curlPhases[i] + lag * 4.2) * (0.10 + lag * 0.34);
+            const waveZ = Math.cos(t * 1.05 + curlPhases[i] * 1.3) * (0.08 + lag * 0.24);
+
+            const ribbonX = baseX + tnx * (lateralOffsets[i] * fanWidth + waveLat);
+            const ribbonY = baseY + tny * (lateralOffsets[i] * fanWidth + waveLat);
+            const ribbonZ = zOffsets[i] * fanZ + waveZ;
+
+            const rdx = ribbonX - px;
+            const rdy = ribbonY - py;
+            const rdz = ribbonZ - pz;
+
+            // Bei Stillstand sanft lockern, damit Partikel nie zusammenklumpen
+            const moveFactor = Math.min(1.0, ptr.speed * 14.0);
+            const followPull = (0.011 + (1.0 - lag) * 0.013) * (0.22 + 0.78 * moveFactor) * fw * dt;
+            vx += rdx * followPull;
+            vy += rdy * followPull;
+            vz += rdz * followPull;
+
+            // Sanfte Strömung entlang der Bahn-Tangente
+            const flowPush = ptr.speed * (1.0 - lag * 0.65) * 0.095 * fw * dt;
+            vx += ttx * flowPush;
+            vy += tty * flowPush;
+
+            // Hintere Schweif-Partikel fransen natürlich früher aus als vordere
+            const baseDecay = moveFactor > 0.12
+              ? (0.995 - lag * 0.013)
+              : (0.976 - lag * 0.012);
+            fw *= Math.pow(baseDecay, dt);
+
+            // Zu weit entfernte Partikel lösen sich weich vom Schweif
+            if (rdx * rdx + rdy * rdy > 32.0) {
+              fw *= Math.pow(0.94, dt);
+            }
+
+            energies[i] = Math.max(energies[i], fw * (0.30 + (1.0 - lag) * 0.50));
+          } else {
+            // Finger/Maus losgelassen: Schweif löst sich weich auf und gleitet zurück
+            fw *= Math.pow(0.935 - trailLags[i] * 0.024, dt);
+          }
+
+          if (fw < 0.002) {
+            fw = 0;
+            followPointerIds[i] = null;
+          }
+          followWeights[i] = fw;
+        }
+
+        // 4. Sanfte Federkraft zurück zur Textform (während des Schweifs auf ~10 % reduziert)
+        const textSpringScale = 1.0 - fw * 0.90;
+        const k = springKs[i] * springMultiplier * textSpringScale * dt;
+        vx += (liveTx - px) * k;
+        vy += (liveTy - py) * k;
+        vz += (liveTz - pz) * k;
+
+        // 5. Viskose Dämpfung & Geschwindigkeitslimit für dauerhaft ruhige Bewegung
         vx *= damping;
         vy *= damping;
         vz *= damping;
@@ -878,7 +1050,7 @@
         velocities[i3 + 1] = vy;
         velocities[i3 + 2] = vz;
 
-        // 5. Sanfte Farb- & Energie-Angleiche
+        // 6. Sanfte Farb- & Energie-Angleiche
         colors[i3] += (targetColors[i3] - colors[i3]) * colorLerp;
         colors[i3 + 1] += (targetColors[i3 + 1] - colors[i3 + 1]) * colorLerp;
         colors[i3 + 2] += (targetColors[i3 + 2] - colors[i3 + 2]) * colorLerp;
@@ -889,8 +1061,9 @@
       // Zeiger-Geschwindigkeit weich abklingen lassen, wenn Finger/Maus ruht
       if (hasPointers) {
         activePointers.forEach((ptr) => {
-          ptr.vx *= Math.pow(0.72, dt);
-          ptr.vy *= Math.pow(0.72, dt);
+          ptr.vx *= Math.pow(0.76, dt);
+          ptr.vy *= Math.pow(0.76, dt);
+          ptr.speed = Math.hypot(ptr.vx, ptr.vy);
         });
       }
 
