@@ -3,18 +3,26 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <title>3D Partikel-Simulation – Gyerekek</title>
+  <title>Gyerekek-App</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#02040a" />
 
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-<link rel="manifest" href="manifest.json" />
-<meta name="theme-color" content="#02040a" />
+  <!-- Fullscreen / App-Modus für iOS & Android -->
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Franyó" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
 
-<!-- Fullscreen / App-Modus für iOS & Android -->
-<meta name="mobile-web-app-capable" content="yes" />
-<meta name="apple-mobile-web-app-capable" content="yes" />
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<meta name="apple-mobile-web-app-title" content="Franyó" />
-<link rel="apple-touch-icon" href="icon-192.png" />
+  <!-- PWA & Fullscreen-Support für Smartphones (Static Web App) -->
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#02040a" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Franyó" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
 
   <!-- Google Font: Inter (latin-ext für gestochen scharfe ungarische Akzente ó, á) -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -28,7 +36,7 @@
   <script type="importmap">
     {
       "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"
+        "three": "https://unpkg.com/three@0.170.0/build/three.module.js"
       }
     }
   </script>
@@ -236,15 +244,17 @@
     const errorBanner = document.getElementById('errorBanner');
     const errorText = document.getElementById('errorText');
 
-    // Hohe Partikeldichte (7.400 mobil / 8.600 Desktop) für messerscharfe Typografie
+    // Hohe Partikeldichte (7.000 mobil / 8.200 Desktop) für messerscharfe Typografie
     const isMobileInit = window.innerWidth < 640;
-    const PARTICLE_COUNT = isMobileInit ? 7400 : 8600;
+    const PARTICLE_COUNT = isMobileInit ? 7000 : 8200;
 
     // Simulationszustand
     let scene, camera, renderer, pointsMesh, geometry, material;
     let currentWord = 'Franyó';
     let hasInteracted = false;
     let currentWordBounds = { width: 15, height: 5.2 };
+    // Temporärer Boost für flüssige Wort-Wechsel (~1,5–2 s), danach sanfte, langsame Rückkehrphysik
+    let morphBoost = 0;
 
     // 3D-Kameraparallaxe
     let camRotX = 0;
@@ -470,10 +480,11 @@
         phasesX[i] = Math.random() * Math.PI * 2;
         phasesY[i] = Math.random() * Math.PI * 2;
         phasesZ[i] = Math.random() * Math.PI * 2;
-        freqs[i] = 1.6 + Math.random() * 2.1;
-        // Eng begrenzte Schwirr-Amplitude im Ruhezustand für maximale Lesbarkeit
-        amps[i] = 0.028 + Math.random() * 0.048;
-        springKs[i] = 0.068 + Math.random() * 0.038;
+        // Sehr ruhiges, langsames Schimmern im Ruhezustand
+        freqs[i] = 0.65 + Math.random() * 0.85;
+        amps[i] = 0.018 + Math.random() * 0.028;
+        // Sehr sanfte, überdämpfte Federkraft für langsames, geschmeidiges Zurückgleiten (~2,5–4 s)
+        springKs[i] = 0.0020 + Math.random() * 0.0010;
         sizes[i] = (isMobileInit ? 1.05 : 1.15) + Math.random() * 0.55;
         energies[i] = 0;
       }
@@ -507,6 +518,8 @@
     function applyWord(word, isInitial = false) {
       if (!WORD_THEMES[word]) return;
       currentWord = word;
+      // Kurzer Morph-Boost beim Laden/Umschalten, damit das neue Wort geschmeidig in ~1,5–2 s entsteht
+      morphBoost = 1.0;
 
       const theme = WORD_THEMES[word];
       const sampled = sampleWordPoints(word);
@@ -558,26 +571,26 @@
         if (isInitial) {
           // Sanfter 3D-Einflug beim ersten Laden direkt in "Franyó"
           const angle = Math.random() * Math.PI * 2;
-          const dist = 2.5 + Math.random() * 9.0;
+          const dist = 1.6 + Math.random() * 4.5;
           positions[i3] = tx + Math.cos(angle) * dist;
           positions[i3 + 1] = ty + Math.sin(angle) * dist;
-          positions[i3 + 2] = tz + (Math.random() - 0.5) * 10.0;
+          positions[i3 + 2] = tz + (Math.random() - 0.5) * 4.0;
 
           colors[i3] = tmpColor.r;
           colors[i3 + 1] = tmpColor.g;
           colors[i3 + 2] = tmpColor.b;
-          energies[i] = 0.25;
+          energies[i] = 0.18;
         } else {
-          // Flüssiger 3D-Wirbel-Übergang beim Umschalten der Schaltfläche
+          // Ruhiger, eleganter Übergang beim Wort-Wechsel ohne chaotischen Wirbel
           const px = positions[i3];
           const py = positions[i3 + 1];
-          const swirlAngle = Math.atan2(py, px) + Math.PI * 0.48;
-          const swirlPower = 0.22 + Math.random() * 0.34;
+          const driftAngle = Math.atan2(py, px) + Math.PI * 0.35;
+          const driftPower = 0.022 + Math.random() * 0.032;
 
-          velocities[i3] += Math.cos(swirlAngle) * swirlPower;
-          velocities[i3 + 1] += Math.sin(swirlAngle) * swirlPower;
-          velocities[i3 + 2] += (Math.random() - 0.5) * 0.85;
-          energies[i] = Math.min(1.0, energies[i] + 0.52);
+          velocities[i3] += Math.cos(driftAngle) * driftPower;
+          velocities[i3 + 1] += Math.sin(driftAngle) * driftPower;
+          velocities[i3 + 2] += (Math.random() - 0.5) * 0.12;
+          energies[i] = Math.min(0.65, energies[i] + 0.25);
         }
       }
 
@@ -654,21 +667,24 @@
     function updatePointer(id, clientX, clientY) {
       const world = screenToWorld(clientX, clientY);
       const prev = activePointers.get(id);
-      const vx = prev ? (world.x - prev.x) * 0.42 : 0;
-      const vy = prev ? (world.y - prev.y) * 0.42 : 0;
+      const rawVx = prev ? (world.x - prev.x) : 0;
+      const rawVy = prev ? (world.y - prev.y) : 0;
+      // Stark geglättete & begrenzte Zeigergeschwindigkeit, damit schnelle Wischbewegungen nie wild werden
+      const vx = prev ? prev.vx * 0.58 + rawVx * 0.42 : 0;
+      const vy = prev ? prev.vy * 0.58 + rawVy * 0.42 : 0;
 
       activePointers.set(id, {
         x: world.x,
         y: world.y,
-        vx: THREE.MathUtils.clamp(vx, -1.2, 1.2),
-        vy: THREE.MathUtils.clamp(vy, -1.2, 1.2)
+        vx: THREE.MathUtils.clamp(vx, -0.52, 0.52),
+        vy: THREE.MathUtils.clamp(vy, -0.52, 0.52)
       });
 
       // Sehr dezente 3D-Neigung (bleibt jederzeit perfekt lesbar)
       const nx = (clientX / window.innerWidth - 0.5) * 2;
       const ny = (clientY / window.innerHeight - 0.5) * 2;
-      targetCamRotY = nx * 0.085;
-      targetCamRotX = ny * 0.055;
+      targetCamRotY = nx * 0.06;
+      targetCamRotX = ny * 0.04;
     }
 
     function removePointer(id) {
@@ -749,21 +765,35 @@
       lastTime = now;
       const t = now * 0.001;
 
-      // Sanfte, sehr ruhige 3D-Eigenbewegung der gesamten Wort-Gruppe
-      const idleRotY = Math.sin(t * 0.45) * 0.032;
-      const idleRotX = Math.cos(t * 0.35) * 0.018;
-      camRotY += (targetCamRotY + idleRotY - camRotY) * 0.06;
-      camRotX += (targetCamRotX + idleRotX - camRotX) * 0.06;
+      // Sehr ruhige, kaum merkliche 3D-Eigenbewegung der Wort-Gruppe
+      const idleRotY = Math.sin(t * 0.28) * 0.024;
+      const idleRotX = Math.cos(t * 0.22) * 0.014;
+      camRotY += (targetCamRotY + idleRotY - camRotY) * 0.04;
+      camRotX += (targetCamRotX + idleRotX - camRotX) * 0.04;
 
       pointsMesh.rotation.y = camRotY;
       pointsMesh.rotation.x = camRotX;
 
-      const damping = Math.pow(0.84, dt);
-      const energyDecay = Math.pow(0.91, dt);
-      const colorLerp = 0.085 * dt;
+      // Morph-Boost nach einem Wort-Wechsel sanft über ~2 Sekunden abklingen lassen
+      if (morphBoost > 0.001) {
+        morphBoost *= Math.pow(0.982, dt);
+      } else {
+        morphBoost = 0;
+      }
 
-      // Interaktionsradius in 3D-Welteinheiten
-      const interactRadius = window.innerWidth < 640 ? 2.65 : 2.35;
+      // Samtige, überdämpfte Viskosität (kein Zurückfedern, kein Zittern)
+      const baseDamping = 0.885 - morphBoost * 0.015;
+      const damping = Math.pow(baseDamping, dt);
+      const springMultiplier = 1.0 + morphBoost * 2.2;
+      const energyDecay = Math.pow(0.955, dt);
+      const colorLerp = 0.048 * dt;
+
+      // Maximale Partikelgeschwindigkeit begrenzen, damit Bewegungen immer ruhig bleiben
+      const maxSpeed = 0.24 + morphBoost * 0.18;
+      const maxSpeedSq = maxSpeed * maxSpeed;
+
+      // Kleiner, präziser Interaktionsradius (~8 % der Wortbreite, wie eine Fingerspitze)
+      const interactRadius = Math.max(1.05, Math.min(1.45, currentWordBounds.width * 0.082));
       const interactRadiusSq = interactRadius * interactRadius;
       const hasPointers = activePointers.size > 0;
 
@@ -778,20 +808,20 @@
         let vy = velocities[i3 + 1];
         let vz = velocities[i3 + 2];
 
-        // 1. Lebendiges, aber eng begrenztes Schwirren um die präzise Textposition
+        // 1. Ruhiges, eng begrenztes Atmen um die präzise Textposition
         const f = freqs[i];
         const a = amps[i];
         const liveTx = targets[i3] + Math.sin(t * f + phasesX[i]) * a;
         const liveTy = targets[i3 + 1] + Math.cos(t * f * 0.92 + phasesY[i]) * a;
-        const liveTz = targets[i3 + 2] + Math.sin(t * f * 0.8 + phasesZ[i]) * (a * 1.4);
+        const liveTz = targets[i3 + 2] + Math.sin(t * f * 0.8 + phasesZ[i]) * (a * 1.1);
 
-        // 2. Federkraft (Spring) zieht Partikel präzise zurück in die Wortform
-        const k = springKs[i] * dt;
+        // 2. Sanfte Federkraft (überdämpft) zieht Partikel langsam & ohne Überschwingen zurück
+        const k = springKs[i] * springMultiplier * dt;
         vx += (liveTx - px) * k;
         vy += (liveTy - py) * k;
         vz += (liveTz - pz) * k;
 
-        // 3. 3D-Abstoßung & Wirbel bei Maus-/Touch-Berührung
+        // 3. Präzises, samtiges Mitziehen + minimale 3D-Verdrängung im kleinen Radius
         if (hasPointers) {
           activePointers.forEach((ptr) => {
             const dx = px - ptr.x;
@@ -801,29 +831,44 @@
             if (distSq < interactRadiusSq && distSq > 0.0001) {
               const dist = Math.sqrt(distSq);
               const factor = 1.0 - dist / interactRadius;
-              const force = factor * factor * 0.42 * dt;
+              const smoothFactor = factor * factor;
 
               const nx = dx / dist;
               const ny = dy / dist;
 
-              // Radiale Abstoßung + leichter Wirbel + Mitnahme durch Zieh-Bewegung
-              vx += nx * force - ny * force * 0.28 + ptr.vx * factor * 0.42;
-              vy += ny * force + nx * force * 0.28 + ptr.vy * factor * 0.42;
+              // Weiche, kontrollierte Mitnahme in Ziehrichtung
+              const dragStrength = (0.14 + smoothFactor * 0.24) * dt;
+              vx += ptr.vx * dragStrength;
+              vy += ptr.vy * dragStrength;
 
-              // Dynamische 3D-Tiefenstreuung (nach vorn und hinten)
+              // Sehr dezentes radiales Wegdrücken (kein Aufspritzen)
+              const pushForce = smoothFactor * 0.028 * dt;
+              vx += nx * pushForce;
+              vy += ny * pushForce;
+
+              // Kontrollierte, milde Z-Bewegung (fliegt nie in die Kamera)
               const zDir = (i % 2 === 0 ? 1 : -1);
-              vz += (zDir * force * 2.2) + Math.sin(phasesZ[i]) * force * 0.9;
+              const pointerSpeed = Math.hypot(ptr.vx, ptr.vy);
+              vz += zDir * (pushForce * 0.55 + smoothFactor * pointerSpeed * 0.045);
 
-              // Intensives Aufleuchten bei Berührung
-              energies[i] = Math.min(1.0, energies[i] + factor * 0.58);
+              // Dezentes Aufleuchten bei sanfter Berührung
+              energies[i] = Math.min(0.85, energies[i] + smoothFactor * 0.28);
             }
           });
         }
 
-        // 4. Dämpfung & Integration
+        // 4. Viskose Dämpfung & Geschwindigkeitslimit für dauerhaft ruhige Bewegung
         vx *= damping;
         vy *= damping;
         vz *= damping;
+
+        const speedSq = vx * vx + vy * vy + vz * vz;
+        if (speedSq > maxSpeedSq) {
+          const scale = maxSpeed / Math.sqrt(speedSq);
+          vx *= scale;
+          vy *= scale;
+          vz *= scale;
+        }
 
         positions[i3] = px + vx * dt;
         positions[i3 + 1] = py + vy * dt;
@@ -841,11 +886,11 @@
         energies[i] *= energyDecay;
       }
 
-      // Zeiger-Geschwindigkeit abklingen lassen, wenn Finger/Maus ruht
+      // Zeiger-Geschwindigkeit weich abklingen lassen, wenn Finger/Maus ruht
       if (hasPointers) {
         activePointers.forEach((ptr) => {
-          ptr.vx *= 0.72;
-          ptr.vy *= 0.72;
+          ptr.vx *= Math.pow(0.72, dt);
+          ptr.vy *= Math.pow(0.72, dt);
         });
       }
 
